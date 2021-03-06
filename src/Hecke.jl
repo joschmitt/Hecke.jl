@@ -98,6 +98,9 @@ export show, StepRange, domain, codomain, image, preimage, modord, resultant,
        next_prime, ispower, number_field, factor
 
 
+# For the caching
+import AbstractAlgebra: CacheDictType, get_cached!
+
 ###############################################################################
 #
 #   Library initialisation

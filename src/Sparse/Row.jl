@@ -6,11 +6,6 @@ export sparse_row, dot, scale_row!, add_scaled_row, permute_row
 #
 ################################################################################
 
-function SRowSpace(R::Ring; cached = true)
-  T = elem_type(R)
-  return SRowSpace{T}(R)
-end
-
 base_ring(A::SRow{fmpz}) = FlintZZ
 
 base_ring(A::SRow{fmpq}) = FlintQQ

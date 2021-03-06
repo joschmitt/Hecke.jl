@@ -46,52 +46,50 @@ mutable struct AlgAssAbsOrd{S, T} <: Ring
   end
 
   function AlgAssAbsOrd{S, T}(A::S, M::FakeFmpqMat, Minv::FakeFmpqMat, B::Vector{T}, cached::Bool = false) where {S, T}
-    if cached && haskey(AlgAssAbsOrdID, (A, M))
-      return AlgAssAbsOrdID[(A, M)]::AlgAssAbsOrd{S, T}
-    end
-    O = AlgAssAbsOrd{S, T}(A)
-    O.basis_alg = B
-    O.basis_matrix = M
-    O.basis_mat_inv = Minv
-    if cached
-      AlgAssAbsOrdID[(A, M)] = O
-    end
-    return O
+    return get_cached!(AlgAssAbsOrdID, (A, M), cached) do
+      O = AlgAssAbsOrd{S, T}(A)
+      O.basis_alg = B
+      O.basis_matrix = M
+      O.basis_mat_inv = Minv
+      if cached
+        AlgAssAbsOrdID[(A, M)] = O
+      end
+      return O
+    end::AlgAssAbsOrd{S, T}
   end
 
   function AlgAssAbsOrd{S, T}(A::S, M::FakeFmpqMat, cached::Bool = false) where {S, T}
-    if cached && haskey(AlgAssAbsOrdID, (A, M))
-      return AlgAssAbsOrdID[(A, M)]::AlgAssAbsOrd{S, T}
-    end
-    O = AlgAssAbsOrd{S, T}(A)
-    d = dim(A)
-    O.basis_matrix = M
-    O.basis_alg = Vector{T}(undef, d)
-    for i in 1:d
-      O.basis_alg[i] = elem_from_mat_row(A, M.num, i, M.den)
-    end
-    if cached
-      AlgAssAbsOrdID[(A, M)] = O
-    end
-    return O
+    return get_cached!(AlgAssAbsOrdID, (A, M), cached) do
+      O = AlgAssAbsOrd{S, T}(A)
+      d = dim(A)
+      O.basis_matrix = M
+      O.basis_alg = Vector{T}(undef, d)
+      for i in 1:d
+        O.basis_alg[i] = elem_from_mat_row(A, M.num, i, M.den)
+      end
+      if cached
+        AlgAssAbsOrdID[(A, M)] = O
+      end
+      return O
+    end::AlgAssAbsOrd{S, T}
   end
 
   function AlgAssAbsOrd{S, T}(A::S, B::Vector{T}, cached::Bool = false) where {S, T}
     O = AlgAssAbsOrd{S, T}(A)
     M = basis_matrix(B, FakeFmpqMat)
-    if cached && haskey(AlgAssAbsOrdID, (A, M))
-      return AlgAssAbsOrdID[(A, M)]::AlgAssAbsOrd{S, T}
-    end
-    O.basis_alg = B
-    O.basis_matrix = M
-    if cached
-      AlgAssAbsOrdID[(A, M)] = O
-    end
-    return O
+
+    return get_cached!(AlgAssAbsOrdID, (A, M), cached) do
+      O.basis_alg = B
+      O.basis_matrix = M
+      if cached
+        AlgAssAbsOrdID[(A, M)] = O
+      end
+      return O
+    end::AlgAssAbsOrd{S, T}
   end
 end
 
-const AlgAssAbsOrdID = Dict{Tuple{AbsAlgAss, FakeFmpqMat}, AlgAssAbsOrd}()
+const AlgAssAbsOrdID = CacheDictType{Tuple{AbsAlgAss, FakeFmpqMat}, AlgAssAbsOrd}()
 
 mutable struct AlgAssAbsOrdElem{S, T} <: RingElem
   elem_in_algebra::T

@@ -7,21 +7,15 @@ export OrdLoc, OrdLocElem
 #
 ###############################################################################
 
-mutable struct OrdLoc{T<:nf_elem} <: Hecke.Ring
+mutable struct OrdLoc{T<:nf_elem} <: Ring
    OK::NfAbsOrd{AnticNumberField,T}
    prime::NfAbsOrdIdl{AnticNumberField,T}
    comp::Bool
 
    function OrdLoc{T}(OK::NfAbsOrd{AnticNumberField,T}, prime::NfAbsOrdIdl{AnticNumberField,T}, cached::Bool = true, comp::Bool = false) where {T <: nf_elem}
-      if cached && haskey(OrdLocDict, (OK, prime, comp))
-         return OrdLocDict[OK, prime, comp]::OrdLoc{T}
-      else
-         z = new(OK, prime, comp)
-         if cached
-            OrdLocDict[OK, prime, comp] = z
-         end
-         return z
-      end
+      return get_cached!(OrdLocDict, (OK, prime, comp), cached) do
+         new(OK, prime, comp)
+       end::OrdLoc{T}
    end
 end
 
@@ -73,7 +67,7 @@ some more detail in divrem
 
 =#
 
-OrdLocDict = Dict{Tuple{NfAbsOrd{AnticNumberField,nf_elem}, NfAbsOrdIdl{AnticNumberField,nf_elem}, Bool}, Hecke.Ring}()
+OrdLocDict = CacheDictType{Tuple{NfAbsOrd{AnticNumberField,nf_elem}, NfAbsOrdIdl{AnticNumberField,nf_elem}, Bool}, Ring}()
 
 mutable struct OrdLocElem{T<:nf_elem} <: RingElem
    data::T

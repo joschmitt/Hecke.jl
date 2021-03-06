@@ -60,8 +60,6 @@ end
 
 # abstract nonsense
 
-const FacElemMonDict = IdDict()
-
 function (x::FacElemMon{S})() where S
   z = FacElem{elem_type(S), S}()
   z.fac = Dict{elem_type(S), fmpz}()
