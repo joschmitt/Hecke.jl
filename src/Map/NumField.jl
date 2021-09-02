@@ -205,7 +205,7 @@ parent_type(::Type{NfAbsNSElem}) = NfAbsNS
 #
 ################################################################################
 
-function image(f::NumFieldMor, x)
+function image(f::NumFieldMor, x::NumFieldElem)
   @assert domain(f) === parent(x)
   return image(f.image_data, codomain(f), x)
 end
