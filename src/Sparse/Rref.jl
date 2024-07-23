@@ -13,7 +13,7 @@ function rref(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
 end
 
 # This does not really work in place, but it certainly changes A
-function rref!(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
+function rref!(A::SMat{T}; truncate::Bool = false, rank_hint::Int = -1) where {T <: FieldElement}
   B = sparse_matrix(base_ring(A))
   B.c = A.c
   number_of_rows = A.r
@@ -28,13 +28,47 @@ function rref!(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
     end
   end
 
+  if rank_hint < 0
+    rank_hint = min(length(A.rows), ncols(A))
+  end
+
   # Prefer sparse rows and, if the number of non-zero entries is equal, rows
   # with more zeros in front. (Appears to be a good heuristic in practice.)
-  rows = sort!(A.rows, lt = (x, y) -> length(x) < length(y) || (length(x) == length(y) && x.pos[1] > y.pos[1]))
+  #rows = sort!(A.rows, lt = (x, y) -> length(x) < length(y) || (length(x) == length(y) && x.pos[1] > y.pos[1]))
+  rows = sort!(A.rows, lt = (x, y) -> x.pos[1] > y.pos[1] || (x.pos[1] == y.pos[1] && length(x) < length(y)))
 
+  #skipped_rows = Int[]
+  #i = 1
+  #while i <= length(rows)
+  #  r = rows[i]
+  #  rpos = r.pos[1]
+  #  b = _add_row_to_rref!(B, r)
+  #  i += 1
+  #  if !b
+  #    continue
+  #  end
+  #  if nrows(B) == rank_hint
+  #    break
+  #  end
+  #  while i <= length(rows) && rows[i].pos[1] == rpos
+  #    push!(skipped_rows, i)
+  #    i += 1
+  #  end
+  #end
+
+  #if nrows(B) != rank_hint
+  #  for i in skipped_rows
+  #    b = _add_row_to_rref!(B, rows[i])
+  #    if nrows(B) == rank_hint
+  #      break
+  #    end
+  #  end
+  #end
   for r in rows
     b = _add_row_to_rref!(B, r)
-    if nrows(B) == ncols(B)
+    #@show b
+    #if nrows(B) == ncols(B)
+    if nrows(B) == rank_hint
       break
     end
   end
