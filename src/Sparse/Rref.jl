@@ -27,10 +27,14 @@ function rref!(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
       i += 1
     end
   end
+  A.r = length(A.rows)
 
-  # Prefer sparse rows and, if the number of non-zero entries is equal, rows
-  # with more zeros in front. (Appears to be a good heuristic in practice.)
-  rows = sort!(A.rows, lt = (x, y) -> length(x) < length(y) || (length(x) == length(y) && x.pos[1] > y.pos[1]))
+  # Prefer rows with more zeros in front and, if the position of the first
+  # non-zero entry is equal, sparse rows.
+  # This way, we should discover the pivots "bottom up" and need to reduce
+  # less when adding a row to the rref.
+  rows = sort!(A.rows, lt = (x, y) -> x.pos[1] > y.pos[1] || (x.pos[1] == y.pos[1] && length(x) < length(y)))
+  #rows = sort!(A.rows, lt = (x, y) -> length(x) < length(y) || (length(x) == length(y) && x.pos[1] > y.pos[1]))
 
   for r in rows
     b = _add_row_to_rref!(B, r)
@@ -46,6 +50,7 @@ function rref!(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
     while length(A.rows) < number_of_rows
       push!(A.rows, sparse_row(base_ring(A)))
     end
+    A.r = number_of_rows
   else
     A.r = B.r
   end
