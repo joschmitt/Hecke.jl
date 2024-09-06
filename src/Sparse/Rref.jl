@@ -179,8 +179,26 @@ function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::V
   return nothing
 end
 
+# Finds the entry of smallest weight in column c (that is not a pivot)
+function _smallest_weight(A::SMat, c::Int, AT::Vector{Vector{Int}}, pivot_rows::Vector{Int})
+  if isempty(AT[c])
+    return (0, nrows(A) * ncols(A))
+  end
+
+  lr, i = findmin(
+                  x -> is_zero(pivot_rows[x]) ? length(A.rows[x]) : ncols(A) + 1,
+                  AT[c]
+                 )
+  if lr > ncols(A)
+    return (0, nrows(A) * ncols(A))
+  end
+
+  w_min = (length(AT[c]) - 1) * (lr - 1)
+  return (AT[c][i], w_min)
+end
+
 function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
-  # "Pseudo" transpose of A: AT[c] is the list indices r such that A[r, c] is
+  # "Pseudo" transpose of A: AT[c] is the list of indices r such that A[r, c] is
   # non-zero
   AT = Vector{Vector{Int}}()
   for i in 1:ncols(A)
@@ -192,56 +210,47 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
     end
   end
 
-  # For a column c, weights[c] is the list of pairs (r, w) where w gives the
-  # weight of the entry A[r, c].
-  # The weight of A[r, c] is defined as (R - 1)*(C - 1), where R is the number
-  # of non-zero entries in row r and C the number of non-zero entries in column
-  # C.
-  # The Vector weights[c] is sorted by increasing weight.
-  # TODO: Possibly, replace this with a fancier data structure.
-  weights = Vector{Vector{Tuple{Int, Int}}}()
-  for c in 1:ncols(A)
-    push!(weights, Vector{Tuple{Int, Int}}())
-    for r in AT[c]
-      lr = length(A.rows[r])
-      lc = length(AT[c])
-      push!(weights[c], (r, (lr - 1)*(lc - 1)))
-    end
-    sort!(weights[c], lt = (x, y) -> x[2] < y[2])
-  end
-
   # If pivot_cols[c] == r with r != 0, then the pivot of column c is in row r
   # If pivot_rows[r] == c with c != 0, then the pivot of row r is in column c
   pivot_cols = zeros(Int, ncols(A))
   pivot_rows = zeros(Int, nrows(A))
 
+  # For a column c, weights[c] is the pair (r, w) such that the entry A[r, c]
+  # has minimal weight in column c.
+  # The weight of A[r, c] is defined as (R - 1)*(C - 1), where R is the number
+  # of non-zero entries in row r and C the number of non-zero entries in column
+  # C.
+  # TODO: Possibly, replace this with a fancier data structure.
+  weights = Vector{Tuple{Int, Int}}()
+  for c in 1:ncols(A)
+    push!(weights, _smallest_weight(A, c, AT, pivot_rows))
+  end
+
   t = base_ring(A)()
   t1 = base_ring(A)()
-  t2 = base_ring(A)()
   while true
     c_min = 0
-    min_weight = (nrows(A) - 1)*(ncols(A) - 1)
+    min_weight = nrows(A) * ncols(A)
     for c in 1:ncols(A)
-      !is_zero(pivot_cols[c]) && continue
-      is_empty(weights[c]) && continue
-      if min_weight >= weights[c][1][2]
+      is_zero(weights[c][1]) && continue
+      if min_weight >= weights[c][2]
         c_min = c
-        min_weight = weights[c][1][2]
+        min_weight = weights[c][2]
       end
     end
     c_min == 0 && break
-    r_min = weights[c_min][1][1]
+    r_min = weights[c_min][1]
     @assert pivot_cols[c_min] == 0
     pivot_cols[c_min] = r_min
-    @assert is_zero(pivot_rows[r_min])
+    @assert pivot_rows[r_min] == 0
     pivot_rows[r_min] = c_min
-    weights[c_min] = Vector{Tuple{Int, Int}}()
+    weights[c_min] = (0, nrows(A) * ncols(A))
     a = A.rows[r_min]
     for c in a.pos
       c == c_min && continue
-      j = findfirst(x -> x[1] == r_min, weights[c])
-      @assert !isnothing(j)
-      deleteat!(weights[c], j)
+      weights[c][1] != r_min && continue
+      weights[c] = _smallest_weight(A, c, AT, pivot_rows)
+      @assert weights[c][1] == 0 || pivot_rows[weights[c][1]] == 0
     end
 
     p = searchsortedfirst(a.pos, c_min)
@@ -259,27 +268,25 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       pb = searchsortedfirst(b.pos, c_min)
       @assert pb <= length(b) && b.pos[pb] == c_min
 
-      for c in b.pos
-        j = findfirst(x -> x[1] == r, weights[c])
-        if !isnothing(j)
-          deleteat!(weights[c], j)
-        end
-      end
+      old_pos = copy(b.pos)
 
       t = -b.values[pb]
       _add_scaled_row_with_transpose!(A, r, r_min, t, AT, t1)
       !is_zero(pivot_rows[r]) && continue
 
       for c in b.pos
-        w = (length(b) - 1)*(length(AT[c]) - 1)
-        rw = (r, w)
-        j = searchsortedfirst(weights[c], rw, lt = (x, y) -> x[2] < y[2])
-        insert!(weights[c], j, rw)
+        weights[c] = _smallest_weight(A, c, AT, pivot_rows)
+        @assert weights[c][1] == 0 || pivot_rows[weights[c][1]] == 0
+      end
+      for c in old_pos
+        insorted(c, b.pos) && continue
+        weights[c] = _smallest_weight(A, c, AT, pivot_rows)
+        @assert weights[c][1] == 0 || pivot_rows[weights[c][1]] == 0
       end
     end
   end
 
-  # At this point, we found all the pivots there
+  # At this point, we found all the pivots there are
   # Now go over the entries of A and make sure that every entry is to the right
   # of its pivot (this is only relevant if A does not have full rank)
 
