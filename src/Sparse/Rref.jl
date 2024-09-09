@@ -182,22 +182,21 @@ end
 # Implements doubly-linked lists with headers to keep track of the length of
 # rows and columns
 # See Duff, Erisman, Reid: Direct methods for sparse matrices,
-#     Oxford University Press,2nd edition, 2017
+#     Oxford University Press, 2nd edition, 2017
 #     Section 10.2
 struct MarkowitzStorage
   forward_links::Vector{Int}
   backward_links::Vector{Int}
   headers::Vector{Int}
-  contained::BitVector
 
   function MarkowitzStorage(n::Int, l::Int)
-    return new(zeros(Int, n), zeros(Int, n), zeros(Int, l), falses(n))
+    return new(zeros(Int, n), zeros(Int, n), zeros(Int, l))
   end
 end
 
 # Add the entry (row or column) of index i with length l
 function _add_entry!(S::MarkowitzStorage, i::Int, l::Int)
-  @assert !S.contained[i]
+  @assert S.forward_links[i] == 0 && S.backward_links[i] == 0
   j = S.headers[l]
   @assert i != j
   S.forward_links[i] = j
@@ -205,18 +204,18 @@ function _add_entry!(S::MarkowitzStorage, i::Int, l::Int)
     S.backward_links[j] = i
   end
   S.headers[l] = i
-  S.contained[i] = true
   return nothing
 end
 
 # Delete the entry (row or column) of index i with length l, that is, set all
 # links to 0
 function _delete_entry!(S::MarkowitzStorage, i::Int, l::Int)
-  if !S.contained[i]
-    return nothing
-  end
   if S.backward_links[i] == 0
-    @assert S.headers[l] == i
+    if S.headers[l] != i
+      # i (of length l) is not an entry, so nothing to delete
+      @assert S.forward_links[i] == 0
+      return nothing
+    end
     S.headers[l] = S.forward_links[i]
   end
   if S.backward_links[i] != 0
@@ -227,7 +226,6 @@ function _delete_entry!(S::MarkowitzStorage, i::Int, l::Int)
   end
   S.forward_links[i] = 0
   S.backward_links[i] = 0
-  S.contained[i] = false
   return nothing
 end
 
@@ -350,7 +348,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
     end
 
     for c in a.pos
-      !pivot_cols[c] && _delete_entry!(col_counts, c, length(AT[c]))
+      _delete_entry!(col_counts, c, length(AT[c]))
     end
 
     # Reduce the rows that have an entry in position c_pivot
@@ -360,9 +358,9 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       pb = searchsortedfirst(b.pos, c_pivot)
       @assert pb <= length(b) && b.pos[pb] == c_pivot
 
-      !pivot_rows[r] && _delete_entry!(row_counts, r, length(b))
+      _delete_entry!(row_counts, r, length(b))
       for c in b.pos
-        !pivot_cols[c] && _delete_entry!(col_counts, c, length(AT[c]))
+        _delete_entry!(col_counts, c, length(AT[c]))
       end
 
       t = -b.values[pb]
