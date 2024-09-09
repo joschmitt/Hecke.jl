@@ -179,24 +179,6 @@ function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::V
   return nothing
 end
 
-# Finds the entry of smallest weight in column c (that is not a pivot)
-function _smallest_weight(A::SMat, c::Int, AT::Vector{Vector{Int}}, pivot_rows::Vector{Int})
-  if isempty(AT[c])
-    return (0, nrows(A) * ncols(A))
-  end
-
-  lr, i = findmin(
-                  x -> is_zero(pivot_rows[x]) ? length(A.rows[x]) : ncols(A) + 1,
-                  AT[c]
-                 )
-  if lr > ncols(A)
-    return (0, nrows(A) * ncols(A))
-  end
-
-  w_min = (length(AT[c]) - 1) * (lr - 1)
-  return (AT[c][i], w_min)
-end
-
 # Implements doubly-linked lists with headers to keep track of the length of
 # rows and columns
 # See Duff, Erisman, Reid: Direct methods for sparse matrices,
@@ -273,47 +255,46 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
 
   l = 1
   while l <= min(nrows(A), ncols(A))
+    l1 = l - 1
     # First, search through the rows of length l
     r = row_counts.headers[l]
     # We already search through all rows and columns of length <= l - 1,
     # so the best we can get is (l - 1)^2
-    break_min = (l - 1)^2
+    break_min = l1^2
+    w_min <= break_min && return r_min, c_min
     while r != 0
       for c in A.rows[r].pos
         !is_zero(pivot_cols[c]) && continue
-        w = (l - 1)*(length(AT[c]) - 1)
+        w = l1 * (length(AT[c]) - 1)
         if w < w_min
           r_min = r
           c_min = c
           w_min = w
-          w_min == break_min && break
+          w_min <= break_min && return r_min, c_min
         end
       end
-      w_min == break_min && break
       r = row_counts.forward_links[r]
     end
-    w_min == break_min && break
 
     # Now search through the columns of length l
     c = col_counts.headers[l]
     # We already search through all rows of length <= l and columns of
     # length <= l - 1, so the best we can get is (l - 1) * l
-    break_min = (l - 1) * l
+    break_min = l1 * l
+    w_min <= break_min && return r_min, c_min
     while c != 0
       for r in AT[c]
         !is_zero(pivot_rows[r]) && continue
-        w = (l - 1)*(length(A.rows[r]) - 1)
+        w = l1 * (length(A.rows[r]) - 1)
         if w < w_min
           r_min = r
           c_min = c
           w_min = w
-          w_min == break_min && break
+          w_min <= break_min && return r_min, c_min
         end
       end
-      w_min == break_min && break
       c = col_counts.forward_links[c]
     end
-    w_min == break_min && break
     l += 1
   end
   return r_min, c_min
