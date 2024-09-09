@@ -220,7 +220,7 @@ end
 # Find an entry (r, c) of A such that the product (R - 1) * (C - 1) is minimized,
 # where R is the number of entries in the row r and C the number of entries in
 # the column c
-function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, col_counts::MarkowitzStorage, pivot_rows::BitVector, pivot_cols::BitVector)
+function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, col_counts::MarkowitzStorage, pivot_rows::BitVector)
   r_min = 0
   c_min = 0
   w_min = nrows(A)*ncols(A)
@@ -236,7 +236,7 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
     w_min <= break_min && return r_min, c_min
     while r != 0
       for c in A.rows[r].pos
-        pivot_cols[c] && continue
+        # column c cannot have a pivot as the columns with a pivot are reduced
         w = l1 * (length(AT[c]) - 1)
         if w < w_min
           r_min = r
@@ -353,7 +353,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   t = base_ring(A)()
   t1 = base_ring(A)()
   @inbounds while true
-    r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows, pivot_cols)
+    r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows)
     r_pivot == 0 && break
     @assert !pivot_cols[c_pivot]
     pivot_cols[c_pivot] = true
