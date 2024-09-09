@@ -470,7 +470,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
 
   # Final step: sort the rows
   @inbounds A.rows = A.rows[sortperm(pivots)]
-  while isempty(A.rows[1])
+  while length(A.rows) != 0 && isempty(A.rows[1])
     deleteat!(A.rows, 1)
     A.r -= 1
   end
