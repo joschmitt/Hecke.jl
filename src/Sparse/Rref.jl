@@ -248,7 +248,7 @@ end
 # Find an entry (r, c) of A such that the product R*C is minimized, where R is
 # the number of entries in the row r and C the number of entries in the
 # column c
-function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, col_counts::MarkowitzStorage, pivot_rows::Vector{Int}, pivot_cols::Vector{Int})
+function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, col_counts::MarkowitzStorage, pivot_rows::BitVector, pivot_cols::BitVector)
   r_min = 0
   c_min = 0
   w_min = nrows(A)*ncols(A)
@@ -264,7 +264,7 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
     w_min <= break_min && return r_min, c_min
     while r != 0
       for c in A.rows[r].pos
-        !is_zero(pivot_cols[c]) && continue
+        pivot_cols[c] && continue
         w = l1 * (length(AT[c]) - 1)
         if w < w_min
           r_min = r
@@ -284,7 +284,7 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
     w_min <= break_min && return r_min, c_min
     while c != 0
       for r in AT[c]
-        !is_zero(pivot_rows[r]) && continue
+        pivot_rows[r] && continue
         w = l1 * (length(A.rows[r]) - 1)
         if w < w_min
           r_min = r
@@ -313,10 +313,13 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
     end
   end
 
-  # If pivot_cols[c] == r with r != 0, then the pivot of column c is in row r
-  # If pivot_rows[r] == c with c != 0, then the pivot of row r is in column c
-  pivot_cols = zeros(Int, ncols(A))
-  pivot_rows = zeros(Int, nrows(A))
+  # If pivot_cols[c] == true, then we found a pivot in column c
+  # If pivot_rows[r] == true, then we found a pivot in row r
+  pivot_cols = falses(ncols(A))
+  pivot_rows = falses(nrows(A))
+
+  # If pivots[r] == c with c != 0, then the pivot in row r is in column c
+  pivots = zeros(Int, nrows(A))
 
   row_counts, col_counts = _initialize_markowitz_storage(A, AT)
 
@@ -325,10 +328,12 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   while true
     r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows, pivot_cols)
     r_pivot == 0 && break
-    @assert pivot_cols[c_pivot] == 0
-    pivot_cols[c_pivot] = r_pivot
-    @assert pivot_rows[r_pivot] == 0
-    pivot_rows[r_pivot] = c_pivot
+    @assert !pivot_cols[c_pivot]
+    pivot_cols[c_pivot] = true
+    @assert !pivot_rows[r_pivot]
+    pivot_rows[r_pivot] = true
+    @assert pivots[r_pivot] == 0
+    pivots[r_pivot] = c_pivot
     _delete_entry!(row_counts, r_pivot, length(A.rows[r_pivot]))
     _delete_entry!(col_counts, c_pivot, length(AT[c_pivot]))
     a = A.rows[r_pivot]
@@ -345,7 +350,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
     end
 
     for c in a.pos
-      is_zero(pivot_cols[c]) && _delete_entry!(col_counts, c, length(AT[c]))
+      !pivot_cols[c] && _delete_entry!(col_counts, c, length(AT[c]))
     end
 
     # Reduce the rows that have an entry in position c_pivot
@@ -355,9 +360,9 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       pb = searchsortedfirst(b.pos, c_pivot)
       @assert pb <= length(b) && b.pos[pb] == c_pivot
 
-      is_zero(pivot_rows[r]) && _delete_entry!(row_counts, r, length(b))
+      !pivot_rows[r] && _delete_entry!(row_counts, r, length(b))
       for c in b.pos
-        is_zero(pivot_cols[c]) && _delete_entry!(col_counts, c, length(AT[c]))
+        !pivot_cols[c] && _delete_entry!(col_counts, c, length(AT[c]))
       end
 
       t = -b.values[pb]
@@ -365,15 +370,15 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
 
       for c in b.pos
         insorted(c, a.pos) && continue
-        is_zero(pivot_cols[c]) && _add_entry!(col_counts, c, length(AT[c]))
+        !pivot_cols[c] && _add_entry!(col_counts, c, length(AT[c]))
       end
 
       is_empty(b) && continue
-      is_zero(pivot_rows[r]) && _add_entry!(row_counts, r, length(b))
+      !pivot_rows[r] && _add_entry!(row_counts, r, length(b))
     end
 
     for c in a.pos
-      is_zero(pivot_cols[c]) && _add_entry!(col_counts, c, length(AT[c]))
+      !pivot_cols[c] && _add_entry!(col_counts, c, length(AT[c]))
     end
   end
 
@@ -383,13 +388,13 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
 
   for c in 1:ncols(A)
     for r in copy(AT[c])
-      pivot_rows[r] <= c && continue
+      pivots[r] <= c && continue
 
       a = A.rows[r]
       c_new = a.pos[1]
-      pivot_cols[c_new] = r
-      pivot_cols[pivot_rows[r]] = 0
-      pivot_rows[r] = c_new
+      pivot_cols[c_new] = true
+      pivot_cols[pivots[r]] = false
+      pivots[r] = c_new
       # We messed up: the pivot in row r has to be in column c_new
 
       if !is_one(a.values[1])
@@ -412,7 +417,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   end
 
   # Final step: sort the rows
-  A.rows = A.rows[sortperm(pivot_rows)]
+  A.rows = A.rows[sortperm(pivots)]
   while isempty(A.rows[1])
     deleteat!(A.rows, 1)
     A.r -= 1
