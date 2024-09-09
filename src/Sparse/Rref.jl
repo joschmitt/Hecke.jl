@@ -125,7 +125,155 @@ function _add_row_to_rref!(M::SMat{T}, v::SRow{T}) where { T <: FieldElem }
   return true
 end
 
-# Adds t*A.rows[l] to A.rows[k] (the ordering is different than in add_scaled_row!!!!)
+### Sparse RREF using Markowitz pivoting to produce minimal fill-in
+# References:
+# * Joux: Algorithmic cryptanalysis, Chapman & Hall/CRC, 2009,
+#   Section 3.4.2.2
+# * Duff, Erisman, Reid: Direct methods for sparse matrices,
+#   Oxford University Press, 2nd edition, 2017
+#   Sections 7.2 and 10.2
+
+# Implements doubly-linked lists with headers to keep track of the length of
+# rows and columns (by length we mean "number of non-zero entries")
+# See Duff, Erisman, Reid: Direct methods for sparse matrices,
+#     Oxford University Press, 2nd edition, 2017
+#     Section 10.2
+#
+# If we store lengths of rows of a matrix A, then forward_links and backward_links
+# have length nrows(A) and headers has length ncols(A).
+# * headers[l] is a row index with a row of length l; if headers[l] == 0, there
+#   are no rows of length l
+# * forward_links[i] gives the next row of length(A.rows[i]) (or 0 if there is
+#   no further row)
+# * backward_links[i] gives the previous row of length(A.rows[i]) (or 0 if there
+#   is no such row)
+# That means one can discover the indices of all rows of a given length l with
+# the loop:
+#   r = headers[l]
+#   while r != 0
+#     r = forward_links[r]
+#   end
+#
+# If lengths of columns are stored, the above holds true with the words "row"
+# and "column" swapped.
+struct MarkowitzStorage
+  forward_links::Vector{Int}
+  backward_links::Vector{Int}
+  headers::Vector{Int}
+
+  function MarkowitzStorage(n::Int, l::Int)
+    return new(zeros(Int, n), zeros(Int, n), zeros(Int, l))
+  end
+end
+
+# Add the entry (row or column) of index i with length l
+function _add_entry!(S::MarkowitzStorage, i::Int, l::Int)
+  @assert S.forward_links[i] == 0 && S.backward_links[i] == 0
+  j = S.headers[l]
+  @assert i != j
+  S.forward_links[i] = j
+  if j != 0
+    S.backward_links[j] = i
+  end
+  S.headers[l] = i
+  return nothing
+end
+
+# Delete the entry (row or column) of index i with length l, that is, set all
+# links to 0
+function _delete_entry!(S::MarkowitzStorage, i::Int, l::Int)
+  if S.backward_links[i] == 0
+    if S.headers[l] != i
+      # i (of length l) is not an entry, so nothing to delete
+      @assert S.forward_links[i] == 0
+      return nothing
+    end
+    S.headers[l] = S.forward_links[i]
+  end
+  if S.backward_links[i] != 0
+    S.forward_links[S.backward_links[i]] = S.forward_links[i]
+  end
+  if S.forward_links[i] != 0
+    S.backward_links[S.forward_links[i]] = S.backward_links[i]
+  end
+  S.forward_links[i] = 0
+  S.backward_links[i] = 0
+  return nothing
+end
+
+# For a sparse matrix A with (pseudo) transpose AT, produce the lists of row and
+# column lengths
+function _initialize_markowitz_storage(A::SMat, AT::Vector{Vector{Int}})
+  row_storage = MarkowitzStorage(nrows(A), ncols(A))
+  col_storage = MarkowitzStorage(ncols(A), nrows(A))
+  for r in 1:nrows(A)
+    is_zero(length(A.rows[r])) && continue
+    _add_entry!(row_storage, r, length(A.rows[r]))
+  end
+  for c in 1:ncols(A)
+    is_zero(length(AT[c])) && continue
+    _add_entry!(col_storage, c, length(AT[c]))
+  end
+  return row_storage, col_storage
+end
+
+# Find an entry (r, c) of A such that the product (R - 1) * (C - 1) is minimized,
+# where R is the number of entries in the row r and C the number of entries in
+# the column c
+function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, col_counts::MarkowitzStorage, pivot_rows::BitVector, pivot_cols::BitVector)
+  r_min = 0
+  c_min = 0
+  w_min = nrows(A)*ncols(A)
+
+  l = 1
+  while l <= min(nrows(A), ncols(A))
+    l1 = l - 1
+    # First, search through the rows of length l
+    r = row_counts.headers[l]
+    # We already search through all rows and columns of length <= l - 1,
+    # so the best we can get is (l - 1)^2
+    break_min = l1^2
+    w_min <= break_min && return r_min, c_min
+    while r != 0
+      for c in A.rows[r].pos
+        pivot_cols[c] && continue
+        w = l1 * (length(AT[c]) - 1)
+        if w < w_min
+          r_min = r
+          c_min = c
+          w_min = w
+          w_min <= break_min && return r_min, c_min
+        end
+      end
+      r = row_counts.forward_links[r]
+    end
+
+    # Now search through the columns of length l
+    c = col_counts.headers[l]
+    # We already search through all rows of length <= l and columns of
+    # length <= l - 1, so the best we can get is (l - 1) * l
+    break_min = l1 * l
+    w_min <= break_min && return r_min, c_min
+    while c != 0
+      for r in AT[c]
+        pivot_rows[r] && continue
+        w = l1 * (length(A.rows[r]) - 1)
+        if w < w_min
+          r_min = r
+          c_min = c
+          w_min = w
+          w_min <= break_min && return r_min, c_min
+        end
+      end
+      c = col_counts.forward_links[c]
+    end
+    l += 1
+  end
+  return r_min, c_min
+end
+
+# Add t*A.rows[l] to A.rows[k] and update AT accordingly
+# WARNING: the ordering of the arguments is different than in add_scaled_row!
 function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::Vector{Vector{Int}}, t1::T = base_ring(A)()) where {T <: FieldElement}
   a = A.rows[l]
   b = A.rows[k]
@@ -179,125 +327,6 @@ function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::V
   return nothing
 end
 
-# Implements doubly-linked lists with headers to keep track of the length of
-# rows and columns
-# See Duff, Erisman, Reid: Direct methods for sparse matrices,
-#     Oxford University Press, 2nd edition, 2017
-#     Section 10.2
-struct MarkowitzStorage
-  forward_links::Vector{Int}
-  backward_links::Vector{Int}
-  headers::Vector{Int}
-
-  function MarkowitzStorage(n::Int, l::Int)
-    return new(zeros(Int, n), zeros(Int, n), zeros(Int, l))
-  end
-end
-
-# Add the entry (row or column) of index i with length l
-function _add_entry!(S::MarkowitzStorage, i::Int, l::Int)
-  @assert S.forward_links[i] == 0 && S.backward_links[i] == 0
-  j = S.headers[l]
-  @assert i != j
-  S.forward_links[i] = j
-  if j != 0
-    S.backward_links[j] = i
-  end
-  S.headers[l] = i
-  return nothing
-end
-
-# Delete the entry (row or column) of index i with length l, that is, set all
-# links to 0
-function _delete_entry!(S::MarkowitzStorage, i::Int, l::Int)
-  if S.backward_links[i] == 0
-    if S.headers[l] != i
-      # i (of length l) is not an entry, so nothing to delete
-      @assert S.forward_links[i] == 0
-      return nothing
-    end
-    S.headers[l] = S.forward_links[i]
-  end
-  if S.backward_links[i] != 0
-    S.forward_links[S.backward_links[i]] = S.forward_links[i]
-  end
-  if S.forward_links[i] != 0
-    S.backward_links[S.forward_links[i]] = S.backward_links[i]
-  end
-  S.forward_links[i] = 0
-  S.backward_links[i] = 0
-  return nothing
-end
-
-function _initialize_markowitz_storage(A::SMat, AT::Vector{Vector{Int}})
-  row_storage = MarkowitzStorage(nrows(A), ncols(A))
-  col_storage = MarkowitzStorage(ncols(A), nrows(A))
-  for r in 1:nrows(A)
-    is_zero(length(A.rows[r])) && continue
-    _add_entry!(row_storage, r, length(A.rows[r]))
-  end
-  for c in 1:ncols(A)
-    is_zero(length(AT[c])) && continue
-    _add_entry!(col_storage, c, length(AT[c]))
-  end
-  return row_storage, col_storage
-end
-
-# Find an entry (r, c) of A such that the product R*C is minimized, where R is
-# the number of entries in the row r and C the number of entries in the
-# column c
-function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, col_counts::MarkowitzStorage, pivot_rows::BitVector, pivot_cols::BitVector)
-  r_min = 0
-  c_min = 0
-  w_min = nrows(A)*ncols(A)
-
-  l = 1
-  while l <= min(nrows(A), ncols(A))
-    l1 = l - 1
-    # First, search through the rows of length l
-    r = row_counts.headers[l]
-    # We already search through all rows and columns of length <= l - 1,
-    # so the best we can get is (l - 1)^2
-    break_min = l1^2
-    w_min <= break_min && return r_min, c_min
-    while r != 0
-      for c in A.rows[r].pos
-        pivot_cols[c] && continue
-        w = l1 * (length(AT[c]) - 1)
-        if w < w_min
-          r_min = r
-          c_min = c
-          w_min = w
-          w_min <= break_min && return r_min, c_min
-        end
-      end
-      r = row_counts.forward_links[r]
-    end
-
-    # Now search through the columns of length l
-    c = col_counts.headers[l]
-    # We already search through all rows of length <= l and columns of
-    # length <= l - 1, so the best we can get is (l - 1) * l
-    break_min = l1 * l
-    w_min <= break_min && return r_min, c_min
-    while c != 0
-      for r in AT[c]
-        pivot_rows[r] && continue
-        w = l1 * (length(A.rows[r]) - 1)
-        if w < w_min
-          r_min = r
-          c_min = c
-          w_min = w
-          w_min <= break_min && return r_min, c_min
-        end
-      end
-      c = col_counts.forward_links[c]
-    end
-    l += 1
-  end
-  return r_min, c_min
-end
-
 function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   # "Pseudo" transpose of A: AT[c] is the list of indices r such that A[r, c] is
   # non-zero
@@ -347,6 +376,8 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       a.values[p] = one(base_ring(A))
     end
 
+    # Delete all columns with an entry in a; the lengths of these columns will
+    # most likely be changed during the reduction
     for c in a.pos
       _delete_entry!(col_counts, c, length(AT[c]))
     end
@@ -358,15 +389,19 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       pb = searchsortedfirst(b.pos, c_pivot)
       @assert pb <= length(b) && b.pos[pb] == c_pivot
 
+      # Delete all columns with an entry in b; the lengths of these columns will
+      # most likely be changed during the reduction
       _delete_entry!(row_counts, r, length(b))
       for c in b.pos
         _delete_entry!(col_counts, c, length(AT[c]))
       end
 
+      # Reduce b by a
       t = -b.values[pb]
       _add_scaled_row_with_transpose!(A, r, r_pivot, t, AT, t1)
 
       is_empty(b) && continue
+
       # Update the column counts for all columns of b that do not appear in a
       i = 1
       j = 1
@@ -385,12 +420,13 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       !pivot_rows[r] && _add_entry!(row_counts, r, length(b))
     end
 
+    # Update the column counts for all columns that appear in a
     for c in a.pos
       !pivot_cols[c] && _add_entry!(col_counts, c, length(AT[c]))
     end
   end
 
-  # At this point, we found all the pivots there are
+  # At this point, we found all the pivots
   # Now go over the entries of A and make sure that every entry is to the right
   # of its pivot (this is only relevant if A does not have full rank)
 
@@ -403,8 +439,10 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       pivot_cols[c_new] = true
       pivot_cols[pivots[r]] = false
       pivots[r] = c_new
+
       # We messed up: the pivot in row r has to be in column c_new
 
+      # Rescale a so that the "new" pivot is 1
       if !is_one(a.values[1])
         t = inv(a.values[1])
         for j = 2:length(a)
@@ -413,6 +451,8 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
         a.values[1] = one(base_ring(A))
       end
 
+      # Reduce all relevant rows again (we don't need to update row_counts
+      # or col_counts anymore)
       for i in copy(AT[c_new])
         i == r && continue
         j = searchsortedfirst(A.rows[i].pos, c_new)
