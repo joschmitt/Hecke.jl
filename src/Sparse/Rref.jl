@@ -368,12 +368,22 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       t = -b.values[pb]
       _add_scaled_row_with_transpose!(A, r, r_pivot, t, AT, t1)
 
-      for c in b.pos
-        insorted(c, a.pos) && continue
-        !pivot_cols[c] && _add_entry!(col_counts, c, length(AT[c]))
-      end
-
       is_empty(b) && continue
+      # Update the column counts for all columns of b that do not appear in a
+      i = 1
+      j = 1
+      while j <= length(b)
+        if i > length(a) || b.pos[j] < a.pos[i]
+          c = b.pos[j]
+          !pivot_cols[c] && _add_entry!(col_counts, c, length(AT[c]))
+          j += 1
+        elseif a.pos[i] < b.pos[j]
+          i += 1
+        else
+          i += 1
+          j += 1
+        end
+      end
       !pivot_rows[r] && _add_entry!(row_counts, r, length(b))
     end
 
