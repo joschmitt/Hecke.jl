@@ -430,37 +430,41 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   # Now go over the entries of A and make sure that every entry is to the right
   # of its pivot (this is only relevant if A does not have full rank)
 
-  for c in 1:ncols(A)
-    for r in copy(AT[c])
-      pivots[r] <= c && continue
+  # Sort the pivots by decreasing column number
+  p_sorted = sort!([(r, pivots[r]) for r in 1:nrows(A)], lt = (x, y) -> x[2] > y[2])
+  for (r, c) in p_sorted
+    c == 0 && break
 
-      a = A.rows[r]
-      c_new = a.pos[1]
-      pivot_cols[c_new] = true
-      pivot_cols[pivots[r]] = false
-      pivots[r] = c_new
+    a = A.rows[r]
+    c_new = a.pos[1]
+    c_new == c && continue
 
-      # We messed up: the pivot in row r has to be in column c_new
+    # We messed up: the pivot in row r is in column c, but there is an entry in
+    # column c_new. We now declare (r, c_new) to be the pivot (and reduce again)
+    @assert c_new < c
 
-      # Rescale a so that the "new" pivot is 1
-      if !is_one(a.values[1])
-        t = inv(a.values[1])
-        for j = 2:length(a)
-          a.values[j] = mul!(a.values[j], a.values[j], t)
-        end
-        a.values[1] = one(base_ring(A))
+    pivot_cols[c_new] = true
+    pivot_cols[pivots[r]] = false
+    pivots[r] = c_new
+
+    # Rescale a so that the "new" pivot is 1
+    if !is_one(a.values[1])
+      t = inv(a.values[1])
+      for j = 2:length(a)
+        a.values[j] = mul!(a.values[j], a.values[j], t)
       end
+      a.values[1] = one(base_ring(A))
+    end
 
-      # Reduce all relevant rows again (we don't need to update row_counts
-      # or col_counts anymore)
-      for i in copy(AT[c_new])
-        i == r && continue
-        j = searchsortedfirst(A.rows[i].pos, c_new)
-        @assert A.rows[i].pos[j] == c_new
+    # Reduce all relevant rows again (we don't need to update row_counts
+    # or col_counts anymore)
+    for i in copy(AT[c_new])
+      i == r && continue
+      j = searchsortedfirst(A.rows[i].pos, c_new)
+      @assert A.rows[i].pos[j] == c_new
 
-        t = -A.rows[i].values[j]
-        _add_scaled_row_with_transpose!(A, i, r, t, AT, t1)
-      end
+      t = -A.rows[i].values[j]
+      _add_scaled_row_with_transpose!(A, i, r, t, AT, t1)
     end
   end
 
