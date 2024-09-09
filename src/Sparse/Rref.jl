@@ -197,6 +197,128 @@ function _smallest_weight(A::SMat, c::Int, AT::Vector{Vector{Int}}, pivot_rows::
   return (AT[c][i], w_min)
 end
 
+# Implements doubly-linked lists with headers to keep track of the length of
+# rows and columns
+# See Duff, Erisman, Reid: Direct methods for sparse matrices,
+#     Oxford University Press,2nd edition, 2017
+#     Section 10.2
+struct MarkowitzStorage
+  forward_links::Vector{Int}
+  backward_links::Vector{Int}
+  headers::Vector{Int}
+  contained::BitVector
+
+  function MarkowitzStorage(n::Int, l::Int)
+    return new(zeros(Int, n), zeros(Int, n), zeros(Int, l), falses(n))
+  end
+end
+
+# Add the entry (row or column) of index i with length l
+function _add_entry!(S::MarkowitzStorage, i::Int, l::Int)
+  @assert !S.contained[i]
+  j = S.headers[l]
+  @assert i != j
+  S.forward_links[i] = j
+  if j != 0
+    S.backward_links[j] = i
+  end
+  S.headers[l] = i
+  S.contained[i] = true
+  return nothing
+end
+
+# Delete the entry (row or column) of index i with length l, that is, set all
+# links to 0
+function _delete_entry!(S::MarkowitzStorage, i::Int, l::Int)
+  if !S.contained[i]
+    return nothing
+  end
+  if S.backward_links[i] == 0
+    @assert S.headers[l] == i
+    S.headers[l] = S.forward_links[i]
+  end
+  if S.backward_links[i] != 0
+    S.forward_links[S.backward_links[i]] = S.forward_links[i]
+  end
+  if S.forward_links[i] != 0
+    S.backward_links[S.forward_links[i]] = S.backward_links[i]
+  end
+  S.forward_links[i] = 0
+  S.backward_links[i] = 0
+  S.contained[i] = false
+  return nothing
+end
+
+function _initialize_markowitz_storage(A::SMat, AT::Vector{Vector{Int}})
+  row_storage = MarkowitzStorage(nrows(A), ncols(A))
+  col_storage = MarkowitzStorage(ncols(A), nrows(A))
+  for r in 1:nrows(A)
+    is_zero(length(A.rows[r])) && continue
+    _add_entry!(row_storage, r, length(A.rows[r]))
+  end
+  for c in 1:ncols(A)
+    is_zero(length(AT[c])) && continue
+    _add_entry!(col_storage, c, length(AT[c]))
+  end
+  return row_storage, col_storage
+end
+
+# Find an entry (r, c) of A such that the product R*C is minimized, where R is
+# the number of entries in the row r and C the number of entries in the
+# column c
+function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, col_counts::MarkowitzStorage, pivot_rows::Vector{Int}, pivot_cols::Vector{Int})
+  r_min = 0
+  c_min = 0
+  w_min = nrows(A)*ncols(A)
+
+  l = 1
+  while l <= min(nrows(A), ncols(A))
+    # First, search through the rows of length l
+    r = row_counts.headers[l]
+    # We already search through all rows and columns of length <= l - 1,
+    # so the best we can get is (l - 1)^2
+    break_min = (l - 1)^2
+    while r != 0
+      for c in A.rows[r].pos
+        !is_zero(pivot_cols[c]) && continue
+        w = (l - 1)*(length(AT[c]) - 1)
+        if w < w_min
+          r_min = r
+          c_min = c
+          w_min = w
+          w_min == break_min && break
+        end
+      end
+      w_min == break_min && break
+      r = row_counts.forward_links[r]
+    end
+    w_min == break_min && break
+
+    # Now search through the columns of length l
+    c = col_counts.headers[l]
+    # We already search through all rows of length <= l and columns of
+    # length <= l - 1, so the best we can get is (l - 1) * l
+    break_min = (l - 1) * l
+    while c != 0
+      for r in AT[c]
+        !is_zero(pivot_rows[r]) && continue
+        w = (l - 1)*(length(A.rows[r]) - 1)
+        if w < w_min
+          r_min = r
+          c_min = c
+          w_min = w
+          w_min == break_min && break
+        end
+      end
+      w_min == break_min && break
+      c = col_counts.forward_links[c]
+    end
+    w_min == break_min && break
+    l += 1
+  end
+  return r_min, c_min
+end
+
 function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   # "Pseudo" transpose of A: AT[c] is the list of indices r such that A[r, c] is
   # non-zero
@@ -215,45 +337,23 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   pivot_cols = zeros(Int, ncols(A))
   pivot_rows = zeros(Int, nrows(A))
 
-  # For a column c, weights[c] is the pair (r, w) such that the entry A[r, c]
-  # has minimal weight in column c.
-  # The weight of A[r, c] is defined as (R - 1)*(C - 1), where R is the number
-  # of non-zero entries in row r and C the number of non-zero entries in column
-  # C.
-  # TODO: Possibly, replace this with a fancier data structure.
-  weights = Vector{Tuple{Int, Int}}()
-  for c in 1:ncols(A)
-    push!(weights, _smallest_weight(A, c, AT, pivot_rows))
-  end
+  row_counts, col_counts = _initialize_markowitz_storage(A, AT)
 
   t = base_ring(A)()
   t1 = base_ring(A)()
   while true
-    c_min = 0
-    min_weight = nrows(A) * ncols(A)
-    for c in 1:ncols(A)
-      is_zero(weights[c][1]) && continue
-      if min_weight >= weights[c][2]
-        c_min = c
-        min_weight = weights[c][2]
-      end
-    end
-    c_min == 0 && break
-    r_min = weights[c_min][1]
-    @assert pivot_cols[c_min] == 0
-    pivot_cols[c_min] = r_min
-    @assert pivot_rows[r_min] == 0
-    pivot_rows[r_min] = c_min
-    weights[c_min] = (0, nrows(A) * ncols(A))
-    a = A.rows[r_min]
-    for c in a.pos
-      c == c_min && continue
-      weights[c][1] != r_min && continue
-      weights[c] = _smallest_weight(A, c, AT, pivot_rows)
-      @assert weights[c][1] == 0 || pivot_rows[weights[c][1]] == 0
-    end
+    r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows, pivot_cols)
+    r_pivot == 0 && break
+    @assert pivot_cols[c_pivot] == 0
+    pivot_cols[c_pivot] = r_pivot
+    @assert pivot_rows[r_pivot] == 0
+    pivot_rows[r_pivot] = c_pivot
+    _delete_entry!(row_counts, r_pivot, length(A.rows[r_pivot]))
+    _delete_entry!(col_counts, c_pivot, length(AT[c_pivot]))
+    a = A.rows[r_pivot]
 
-    p = searchsortedfirst(a.pos, c_min)
+    # Scale the pivot to 1
+    p = searchsortedfirst(a.pos, c_pivot)
     if !is_one(a.values[p])
       t = inv(a.values[p])
       for j = 1:length(a)
@@ -262,27 +362,37 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
       end
       a.values[p] = one(base_ring(A))
     end
-    for r in copy(AT[c_min])
-      r == r_min && continue
-      b = A.rows[r]
-      pb = searchsortedfirst(b.pos, c_min)
-      @assert pb <= length(b) && b.pos[pb] == c_min
 
-      old_pos = copy(b.pos)
+    for c in a.pos
+      is_zero(pivot_cols[c]) && _delete_entry!(col_counts, c, length(AT[c]))
+    end
+
+    # Reduce the rows that have an entry in position c_pivot
+    for r in copy(AT[c_pivot])
+      r == r_pivot && continue
+      b = A.rows[r]
+      pb = searchsortedfirst(b.pos, c_pivot)
+      @assert pb <= length(b) && b.pos[pb] == c_pivot
+
+      is_zero(pivot_rows[r]) && _delete_entry!(row_counts, r, length(b))
+      for c in b.pos
+        is_zero(pivot_cols[c]) && _delete_entry!(col_counts, c, length(AT[c]))
+      end
 
       t = -b.values[pb]
-      _add_scaled_row_with_transpose!(A, r, r_min, t, AT, t1)
-      !is_zero(pivot_rows[r]) && continue
+      _add_scaled_row_with_transpose!(A, r, r_pivot, t, AT, t1)
 
       for c in b.pos
-        weights[c] = _smallest_weight(A, c, AT, pivot_rows)
-        @assert weights[c][1] == 0 || pivot_rows[weights[c][1]] == 0
+        insorted(c, a.pos) && continue
+        is_zero(pivot_cols[c]) && _add_entry!(col_counts, c, length(AT[c]))
       end
-      for c in old_pos
-        insorted(c, b.pos) && continue
-        weights[c] = _smallest_weight(A, c, AT, pivot_rows)
-        @assert weights[c][1] == 0 || pivot_rows[weights[c][1]] == 0
-      end
+
+      is_empty(b) && continue
+      is_zero(pivot_rows[r]) && _add_entry!(row_counts, r, length(b))
+    end
+
+    for c in a.pos
+      is_zero(pivot_cols[c]) && _add_entry!(col_counts, c, length(AT[c]))
     end
   end
 
