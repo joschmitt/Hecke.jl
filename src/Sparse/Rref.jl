@@ -206,11 +206,11 @@ end
 function _initialize_markowitz_storage(A::SMat, AT::Vector{Vector{Int}})
   row_storage = MarkowitzStorage(nrows(A), ncols(A))
   col_storage = MarkowitzStorage(ncols(A), nrows(A))
-  for r in 1:nrows(A)
+  @inbounds for r in 1:nrows(A)
     is_zero(length(A.rows[r])) && continue
     _add_entry!(row_storage, r, length(A.rows[r]))
   end
-  for c in 1:ncols(A)
+  @inbounds for c in 1:ncols(A)
     is_zero(length(AT[c])) && continue
     _add_entry!(col_storage, c, length(AT[c]))
   end
@@ -226,7 +226,7 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
   w_min = nrows(A)*ncols(A)
 
   l = 1
-  while l <= min(nrows(A), ncols(A))
+  @inbounds while l <= min(nrows(A), ncols(A))
     l1 = l - 1
     # First, search through the rows of length l
     r = row_counts.headers[l]
@@ -280,7 +280,7 @@ function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::V
 
   i = 1
   j = 1
-  while i <= length(a) && j <= length(b)
+  @inbounds while i <= length(a) && j <= length(b)
     if a.pos[i] < b.pos[j]
       t1 = mul!(t1, t, a.values[i])
       if !is_zero(t1)
@@ -312,7 +312,7 @@ function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::V
       i += 1
     end
   end
-  while i <= length(a)
+  @inbounds while i <= length(a)
     t1 = mul!(t1, t, a.values[i])
     if !is_zero(t1)
       push!(b.pos, a.pos[i])
@@ -352,7 +352,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
 
   t = base_ring(A)()
   t1 = base_ring(A)()
-  while true
+  @inbounds while true
     r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows, pivot_cols)
     r_pivot == 0 && break
     @assert !pivot_cols[c_pivot]
@@ -432,7 +432,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
 
   # Sort the pivots by decreasing column number
   p_sorted = sort!([(r, pivots[r]) for r in 1:nrows(A)], lt = (x, y) -> x[2] > y[2])
-  for (r, c) in p_sorted
+  @inbounds for (r, c) in p_sorted
     c == 0 && break
 
     a = A.rows[r]
@@ -469,7 +469,7 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
   end
 
   # Final step: sort the rows
-  A.rows = A.rows[sortperm(pivots)]
+  @inbounds A.rows = A.rows[sortperm(pivots)]
   while isempty(A.rows[1])
     deleteat!(A.rows, 1)
     A.r -= 1
