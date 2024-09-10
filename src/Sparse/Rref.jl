@@ -8,7 +8,7 @@ rows, so `nrows(A) == rank(M)`.
 """
 function rref(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
   B = deepcopy(A)
-  r = rref_markowitz!(B, truncate = truncate)
+  r = rref!(B, truncate = truncate)
   return r, B
 end
 
@@ -228,12 +228,12 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
   l = 1
   @inbounds while l <= min(nrows(A), ncols(A))
     l1 = l - 1
-    # First, search through the rows of length l
-    r = row_counts.headers[l]
     # We already search through all rows and columns of length <= l - 1,
     # so the best we can get is (l - 1)^2
     break_min = l1^2
     w_min <= break_min && return r_min, c_min
+    # First, search through the rows of length l
+    r = row_counts.headers[l]
     while r != 0
       for c in A.rows[r].pos
         # column c cannot have a pivot as the columns with a pivot are reduced
@@ -248,12 +248,12 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
       r = row_counts.forward_links[r]
     end
 
-    # Now search through the columns of length l
-    c = col_counts.headers[l]
     # We already search through all rows of length <= l and columns of
     # length <= l - 1, so the best we can get is (l - 1) * l
     break_min = l1 * l
     w_min <= break_min && return r_min, c_min
+    # Now search through the columns of length l
+    c = col_counts.headers[l]
     while c != 0
       for r in AT[c]
         pivot_rows[r] && continue
@@ -325,6 +325,12 @@ function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::V
     i += 1
   end
   return nothing
+end
+
+function rref_markowitz(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
+  B = deepcopy(A)
+  r = rref_markowitz!(B, truncate = truncate)
+  return r, B
 end
 
 function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
@@ -490,8 +496,8 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
     end
   end
 
-  @show t_search
-  @show t_reduce
+  #@show t_search
+  #@show t_reduce
   return rk
 end
 
