@@ -8,7 +8,7 @@ rows, so `nrows(A) == rank(M)`.
 """
 function rref(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
   B = deepcopy(A)
-  r = rref!(B, truncate = truncate)
+  r = rref_markowitz!(B, truncate = truncate)
   return r, B
 end
 
@@ -327,7 +327,7 @@ function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::V
   return nothing
 end
 
-function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
+function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldElement}
   # "Pseudo" transpose of A: AT[c] is the list of indices r such that A[r, c] is
   # non-zero
   AT = Vector{Vector{Int}}()
@@ -481,10 +481,18 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
     deleteat!(A.rows, 1)
     A.r -= 1
   end
+  rk = nrows(A)
+
+  if !truncate
+    while length(A.rows) < length(pivots)
+      push!(A.rows, sparse_row(base_ring(A)))
+      A.r += 1
+    end
+  end
 
   @show t_search
   @show t_reduce
-  return A
+  return rk
 end
 
 ###############################################################################
