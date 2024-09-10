@@ -352,8 +352,13 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
 
   t = base_ring(A)()
   t1 = base_ring(A)()
+  t_search = 0.0
+  t_reduce = 0.0
+  t_time = 0.0
   @inbounds while true
+    t_time = time()
     r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows)
+    t_search += time() - t_time
     r_pivot == 0 && break
     @assert !pivot_cols[c_pivot]
     pivot_cols[c_pivot] = true
@@ -398,7 +403,9 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
 
       # Reduce b by a
       t = -b.values[pb]
+      t_time = time()
       _add_scaled_row_with_transpose!(A, r, r_pivot, t, AT, t1)
+      t_reduce += time() - t_time
 
       is_empty(b) && continue
 
@@ -475,6 +482,8 @@ function rref_markowitz!(A::SMat{T}) where {T <: FieldElement}
     A.r -= 1
   end
 
+  @show t_search
+  @show t_reduce
   return A
 end
 
