@@ -225,12 +225,21 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
   c_min = 0
   w_min = nrows(A)*ncols(A)
 
-  l = 1
+  min_row_length = findfirst(!iszero, row_counts.headers)
+  min_col_length = findfirst(!iszero, col_counts.headers)
+  if isnothing(min_row_length) || isnothing(min_col_length)
+    return r_min, c_min
+  end
+
+  l = min(min_row_length, min_col_length)
   @inbounds while l <= min(nrows(A), ncols(A))
     l1 = l - 1
     # We already search through all rows and columns of length <= l - 1,
     # so the best we can get is (l - 1)^2
     break_min = l1^2
+    if l < min_col_length
+      break_min = l1 * (min_col_length - 1)
+    end
     w_min <= break_min && return r_min, c_min
     # First, search through the rows of length l
     r = row_counts.headers[l]
@@ -249,8 +258,11 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
     end
 
     # We already search through all rows of length <= l and columns of
-    # length <= l - 1, so the best we can get is (l - 1) * l
-    break_min = l1 * l
+    # length <= l - 1, so the best we can get is l * (l - 1)
+    break_min = l * l1
+    if l < min_row_length
+      break_min = min_row_length * l1
+    end
     w_min <= break_min && return r_min, c_min
     # Now search through the columns of length l
     c = col_counts.headers[l]
