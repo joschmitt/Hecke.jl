@@ -231,14 +231,19 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
     return r_min, c_min
   end
 
+  # We terminate as soon as we find something that is slightly worse (by
+  # `allow_more`) than the theoretical minimum.
+  # This seems to speed up the search in low lengths by far.
+  allow_more = 2
+
   l = min(min_row_length, min_col_length)
   @inbounds while l <= min(nrows(A), ncols(A))
     l1 = l - 1
     # We already search through all rows and columns of length <= l - 1,
     # so the best we can get is (l - 1)^2
-    break_min = l1^2
+    break_min = l1^2 + allow_more
     if l < min_col_length
-      break_min = l1 * (min_col_length - 1)
+      break_min = l1 * (min_col_length - 1) + allow_more
     end
     w_min <= break_min && return r_min, c_min
     # First, search through the rows of length l
@@ -259,9 +264,9 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
 
     # We already search through all rows of length <= l and columns of
     # length <= l - 1, so the best we can get is l * (l - 1)
-    break_min = l * l1
+    break_min = l * l1 + allow_more
     if l < min_row_length
-      break_min = min_row_length * l1
+      break_min = min_row_length * l1 + allow_more
     end
     w_min <= break_min && return r_min, c_min
     # Now search through the columns of length l
