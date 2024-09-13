@@ -363,6 +363,8 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
     end
   end
 
+  starting_nrows = nrows(A)
+
   # If pivot_cols[c] == true, then we found a pivot in column c
   # If pivot_rows[r] == true, then we found a pivot in row r
   pivot_cols = falses(ncols(A))
@@ -380,11 +382,31 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
   t1 = base_ring(A)()
   t_search = 0.0
   t_reduce = 0.0
+  t_reduces = Float64[]
   t_bookkeeping = 0.0
   t_scale = 0.0
   t_cleanup = 0.0
   t_time = 0.0
+  n_pivots = 0
+  n_zero_rows = 0
+  n_remaining_entries = 0
+  for r in 1:nrows(A)
+    if isempty(A.rows[r])
+      n_zero_rows += 1
+    else
+      n_remaining_entries += length(A.rows[r])
+    end
+  end
   @inbounds while true
+    n_remaining_rows = nrows(A) - n_pivots - n_zero_rows
+    if n_remaining_entries/(n_remaining_rows*(ncols(A) - n_pivots)) > 0.1
+      AT = _rref_go_dense!(A, pivots, pivot_rows, pivot_cols)
+      break
+    end
+    n_pivots += 1
+    if mod(n_pivots, 100) == 0
+      push!(t_reduces, t_reduce)
+    end
     t_time = time()
     r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows)
     t_search += time() - t_time
@@ -413,6 +435,8 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
       a.values[p] = one(base_ring(A))
     end
     t_scale += time() - t_time
+
+    n_remaining_entries -= length(a)
 
     # Remember all columns with an entry in a; the lengths of these columns will
     # most likely be changed during the reduction
@@ -447,6 +471,13 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
       t = -b.values[pb]
       _add_scaled_row_with_transpose!(A, r, r_pivot, t, AT, t1)
       t_reduce += time() - t_time
+
+      if isempty(b)
+        n_zero_rows += 1
+      end
+      if !pivot_rows[r]
+        n_remaining_entries += (length(b) - old_len_b)
+      end
 
       # Update the row count of b
       old_len_b == length(b) && continue
@@ -525,7 +556,7 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
   rk = nrows(A)
 
   if !truncate
-    while length(A.rows) < length(pivots)
+    while length(A.rows) < starting_nrows
       push!(A.rows, sparse_row(base_ring(A)))
       A.r += 1
     end
@@ -537,7 +568,140 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
   #@show t_scale
   #@show t_bookkeeping
   #@show t_cleanup
+  #return t_reduces
   return rk
+end
+
+function _rref_go_dense!(A::SMat, pivots::Vector{Int}, pivot_rows::BitVector, pivot_cols::BitVector)
+  B, dense_col_to_sparse_col = _to_dense_matrix!(A, pivots, pivot_rows, pivot_cols)
+  rk = rref!(B)
+
+  AT = Vector{Vector{Int}}()
+  for i in 1:ncols(A)
+    push!(AT, Vector{Int}())
+  end
+  for i in 1:nrows(A)
+    for j in A.rows[i].pos
+      push!(AT[j], i)
+    end
+  end
+
+  A2 = sparse_matrix(base_ring(A), 0, ncols(A))
+  _to_sparse_matrix!(B, A2, pivots, dense_col_to_sparse_col)
+
+  nr = nrows(A)
+  for r in 1:nrows(A2)
+    @assert !isempty(A2.rows[r])
+    push!(A.rows, A2.rows[r])
+    for c in A2.rows[r].pos
+      push!(AT[c], r + nr)
+    end
+    A.r += 1
+    A.nnz += length(A.rows[end])
+  end
+
+  ### DEBUG
+  AT2 = Vector{Vector{Int}}()
+  for i in 1:ncols(A)
+    push!(AT2, Vector{Int}())
+  end
+  for i in 1:nrows(A)
+    for j in A.rows[i].pos
+      push!(AT2[j], i)
+    end
+  end
+  @assert AT2 == AT
+  ### END DEBUG
+
+  t = base_ring(A)()
+  t1 = base_ring(A)()
+  for r_pivot in nr + 1:nrows(A)
+    @assert pivots[r_pivot] != 0
+    c_pivot = pivots[r_pivot]
+    for r in copy(AT[c_pivot])
+      r > nr && break
+      b = A.rows[r]
+      pb = searchsortedfirst(b.pos, c_pivot)
+      @assert pb <= length(b) && b.pos[pb] == c_pivot
+
+      # Reduce b by a
+      t = -b.values[pb]
+      _add_scaled_row_with_transpose!(A, r, r_pivot, t, AT, t1)
+    end
+  end
+  return AT
+end
+
+# Delete all empty and non-pivot rows from A and put the non-pivot rows in a
+# dense matrix.
+# Return the dense matrix and an vector mapping a "dense column" to a "sparse
+# column". A and pivots are updated in place, pivot_rows and pivot_cols are NOT
+# updated.
+function _to_dense_matrix!(A::SMat, pivots::Vector{Int}, pivot_rows::BitVector, pivot_cols::BitVector)
+  nr = 0
+  for i in 1:nrows(A)
+    pivot_rows[i] && continue
+    isempty(A.rows[i]) && continue
+    nr += 1
+  end
+
+  sparse_col_to_dense_col = zeros(Int, ncols(A))
+  dense_col_to_sparse_col = Int[]
+  c = 1
+  for j in 1:ncols(A)
+    pivot_cols[j] && continue
+    sparse_col_to_dense_col[j] = c
+    push!(dense_col_to_sparse_col, j)
+    c += 1
+  end
+  nc = length(dense_col_to_sparse_col)
+
+  B = zero_matrix(base_ring(A), nr, nc)
+  r = 1
+  i = 1
+  while i <= length(A.rows)
+    if pivots[i] != 0
+      i += 1
+      continue
+    end
+    if !isempty(A.rows[i])
+      for j in 1:length(A.rows[i])
+        @assert !pivot_cols[A.rows[i].pos[j]]
+        B[r, sparse_col_to_dense_col[A.rows[i].pos[j]]] = A.rows[i].values[j]
+      end
+      r += 1
+    end
+    # TODO: Write proper row removal function
+    A.nnz -= length(A.rows[i])
+    deleteat!(A.rows, i)
+    A.r -= 1
+    deleteat!(pivots, i)
+  end
+  @assert length(pivots) == A.r
+  @assert all(!iszero, pivots)
+  return B, dense_col_to_sparse_col
+end
+
+# Assumes that B is upper triangular
+function _to_sparse_matrix!(B::MatElem, A::SMat, pivots::Vector{Int}, dense_col_to_sparse_col::Vector{Int})
+  for i in 1:nrows(B)
+    pos = Vector{Int}()
+    values = Vector{elem_type(base_ring(B))}()
+    for j in 1:ncols(B)
+      iszero(B[i, j]) && continue
+      push!(pos, dense_col_to_sparse_col[j])
+      push!(values, B[i, j])
+    end
+    isempty(pos) && break
+    R = sparse_row(base_ring(B), pos, values)
+    # TODO: Write proper row addition function
+    push!(A.rows, R)
+    A.r += 1
+    A.nnz += length(R)
+    push!(pivots, R.pos[1])
+  end
+  @assert length(unique(pivots)) == length(pivots)
+  return nothing
 end
 
 ###############################################################################
