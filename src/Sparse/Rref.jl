@@ -373,10 +373,16 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
 
   row_counts, col_counts = _initialize_markowitz_storage(A, AT)
 
+  # Used to remember which column counts we need to update after reduction
+  cols_changed = zeros(Int, ncols(A))
+
   t = base_ring(A)()
   t1 = base_ring(A)()
   t_search = 0.0
   t_reduce = 0.0
+  t_bookkeeping = 0.0
+  t_scale = 0.0
+  t_cleanup = 0.0
   t_time = 0.0
   @inbounds while true
     t_time = time()
@@ -389,11 +395,14 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
     pivot_rows[r_pivot] = true
     @assert pivots[r_pivot] == 0
     pivots[r_pivot] = c_pivot
+    t_time = time()
     _delete_entry!(row_counts, r_pivot, length(A.rows[r_pivot]))
     _delete_entry!(col_counts, c_pivot, length(AT[c_pivot]))
+    t_bookkeeping += time() - t_time
     a = A.rows[r_pivot]
 
     # Scale the pivot to 1
+    t_time = time()
     p = searchsortedfirst(a.pos, c_pivot)
     if !is_one(a.values[p])
       t = inv(a.values[p])
@@ -403,57 +412,65 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
       end
       a.values[p] = one(base_ring(A))
     end
+    t_scale += time() - t_time
 
-    # Delete all columns with an entry in a; the lengths of these columns will
+    # Remember all columns with an entry in a; the lengths of these columns will
     # most likely be changed during the reduction
+    t_time = time()
     for c in a.pos
-      _delete_entry!(col_counts, c, length(AT[c]))
+      cols_changed[c] = length(AT[c])
     end
+    t_bookkeeping += time() - t_time
 
     # Reduce the rows that have an entry in position c_pivot
     for r in copy(AT[c_pivot])
       r == r_pivot && continue
+      t_time = time()
       b = A.rows[r]
       pb = searchsortedfirst(b.pos, c_pivot)
+      t_reduce += time() - t_time
       @assert pb <= length(b) && b.pos[pb] == c_pivot
 
-      # Delete all columns with an entry in b; the lengths of these columns will
+      # Remember all columns with an entry in b; the lengths of these columns will
       # most likely be changed during the reduction
-      _delete_entry!(row_counts, r, length(b))
+      t_time = time()
+      old_len_b = length(b)
       for c in b.pos
-        _delete_entry!(col_counts, c, length(AT[c]))
+        if cols_changed[c] == 0
+          cols_changed[c] = length(AT[c])
+        end
       end
+      t_bookkeeping += time() - t_time
 
       # Reduce b by a
-      t = -b.values[pb]
       t_time = time()
+      t = -b.values[pb]
       _add_scaled_row_with_transpose!(A, r, r_pivot, t, AT, t1)
       t_reduce += time() - t_time
 
-      is_empty(b) && continue
-
-      # Update the column counts for all columns of b that do not appear in a
-      i = 1
-      j = 1
-      while j <= length(b)
-        if i > length(a) || b.pos[j] < a.pos[i]
-          c = b.pos[j]
-          !pivot_cols[c] && _add_entry!(col_counts, c, length(AT[c]))
-          j += 1
-        elseif a.pos[i] < b.pos[j]
-          i += 1
-        else
-          i += 1
-          j += 1
-        end
+      # Update the row count of b
+      old_len_b == length(b) && continue
+      t_time = time()
+      if !pivot_rows[r]
+        _delete_entry!(row_counts, r, old_len_b)
+        !is_empty(b) && _add_entry!(row_counts, r, length(b))
       end
-      !pivot_rows[r] && _add_entry!(row_counts, r, length(b))
+      t_bookkeeping += time() - t_time
     end
 
-    # Update the column counts for all columns that appear in a
-    for c in a.pos
-      !pivot_cols[c] && _add_entry!(col_counts, c, length(AT[c]))
+    # Update the column counts for all columns
+    t_time = time()
+    for c in 1:ncols(A)
+      pivot_cols[c] && continue
+      l_old = cols_changed[c] # the old length of the column before reduction
+      cols_changed[c] = 0
+      l_old == 0 && continue # we did not touch this column
+      l_new = length(AT[c])
+      l_old == l_new && continue
+      _delete_entry!(col_counts, c, l_old)
+      l_new == 0 || _add_entry!(col_counts, c, l_new)
     end
+    t_bookkeeping += time() - t_time
   end
 
   # At this point, we found all the pivots
@@ -461,6 +478,7 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
   # of its pivot (this is only relevant if A does not have full rank)
 
   # Sort the pivots by decreasing column number
+  t_time = time()
   p_sorted = sort!([(r, pivots[r]) for r in 1:nrows(A)], lt = (x, y) -> x[2] > y[2])
   @inbounds for (r, c) in p_sorted
     c == 0 && break
@@ -512,9 +530,13 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
       A.r += 1
     end
   end
+  t_cleanup += time() - t_time
 
   #@show t_search
   #@show t_reduce
+  #@show t_scale
+  #@show t_bookkeeping
+  #@show t_cleanup
   return rk
 end
 
