@@ -289,6 +289,40 @@ function _find_next_pivot(A::SMat, AT::Vector{Vector{Int}}, row_counts::Markowit
   return r_min, c_min
 end
 
+function _find_next_pivot2(A::SMat, AT::Vector{Vector{Int}}, row_counts::MarkowitzStorage, pivot_rows::BitVector)
+  r_min = 0
+  c_min = 0
+  w_min = nrows(A)*ncols(A)
+
+  l = 1
+  @inbounds while l <= ncols(A)
+    nr = 0
+    l1 = l - 1
+    #break_min = l1^2 + 2
+    #w_min <= break_min && return r_min, c_min
+    r = row_counts.headers[l]
+    while r != 0 && nr < 5
+      nr += 1
+      for c in A.rows[r].pos
+        # column c cannot have a pivot as the columns with a pivot are reduced
+        w = l1 * (length(AT[c]) - 1)
+        if w < w_min
+          r_min = r
+          c_min = c
+          w_min = w
+          #w_min <= break_min && return r_min, c_min
+        end
+      end
+      r = row_counts.forward_links[r]
+    end
+    if r_min != 0
+      return r_min, c_min
+    end
+    l += 1
+  end
+  return r_min, c_min
+end
+
 # Add t*A.rows[l] to A.rows[k] and update AT accordingly
 # WARNING: the ordering of the arguments is different than in add_scaled_row!
 function _add_scaled_row_with_transpose!(A::SMat{T}, k::Int, l::Int, t::T, AT::Vector{Vector{Int}}, t1::T = base_ring(A)()) where {T <: FieldElement}
@@ -399,16 +433,17 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
   end
   @inbounds while true
     n_remaining_rows = nrows(A) - n_pivots - n_zero_rows
-    if n_remaining_entries/(n_remaining_rows*(ncols(A) - n_pivots)) > 0.1
-      AT = _rref_go_dense!(A, pivots, pivot_rows, pivot_cols)
-      break
-    end
+    #if n_remaining_entries/(n_remaining_rows*(ncols(A) - n_pivots)) > 0.1
+    #  AT = _rref_go_dense!(A, pivots, pivot_rows, pivot_cols)
+    #  break
+    #end
     n_pivots += 1
     if mod(n_pivots, 100) == 0
       push!(t_reduces, t_reduce)
     end
     t_time = time()
-    r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows)
+    #r_pivot, c_pivot = _find_next_pivot(A, AT, row_counts, col_counts, pivot_rows)
+    r_pivot, c_pivot = _find_next_pivot2(A, AT, row_counts, pivot_rows)
     t_search += time() - t_time
     r_pivot == 0 && break
     @assert !pivot_cols[c_pivot]
@@ -419,7 +454,7 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
     pivots[r_pivot] = c_pivot
     t_time = time()
     _delete_entry!(row_counts, r_pivot, length(A.rows[r_pivot]))
-    _delete_entry!(col_counts, c_pivot, length(AT[c_pivot]))
+    #_delete_entry!(col_counts, c_pivot, length(AT[c_pivot]))
     t_bookkeeping += time() - t_time
     a = A.rows[r_pivot]
 
@@ -449,7 +484,7 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
     # Reduce the rows that have an entry in position c_pivot
     for r in copy(AT[c_pivot])
       r == r_pivot && continue
-      t_time = time()
+      #t_time = time()
       b = A.rows[r]
       pb = searchsortedfirst(b.pos, c_pivot)
       t_reduce += time() - t_time
@@ -489,19 +524,19 @@ function rref_markowitz!(A::SMat{T}; truncate::Bool = false) where {T <: FieldEl
       t_bookkeeping += time() - t_time
     end
 
-    # Update the column counts for all columns
-    t_time = time()
-    for c in 1:ncols(A)
-      pivot_cols[c] && continue
-      l_old = cols_changed[c] # the old length of the column before reduction
-      cols_changed[c] = 0
-      l_old == 0 && continue # we did not touch this column
-      l_new = length(AT[c])
-      l_old == l_new && continue
-      _delete_entry!(col_counts, c, l_old)
-      l_new == 0 || _add_entry!(col_counts, c, l_new)
-    end
-    t_bookkeeping += time() - t_time
+    ## Update the column counts for all columns
+    #t_time = time()
+    #for c in 1:ncols(A)
+    #  pivot_cols[c] && continue
+    #  l_old = cols_changed[c] # the old length of the column before reduction
+    #  cols_changed[c] = 0
+    #  l_old == 0 && continue # we did not touch this column
+    #  l_new = length(AT[c])
+    #  l_old == l_new && continue
+    #  _delete_entry!(col_counts, c, l_old)
+    #  l_new == 0 || _add_entry!(col_counts, c, l_new)
+    #end
+    #t_bookkeeping += time() - t_time
   end
 
   # At this point, we found all the pivots
